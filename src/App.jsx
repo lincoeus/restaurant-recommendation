@@ -97,6 +97,14 @@ function App() {
     setToast('已从餐厅库加入待前往')
   }
 
+  function deleteRestaurant(restaurant) {
+    if (!window.confirm(`确定要从餐厅库删除「${restaurant.name}」吗？`)) return
+    setRestaurants(prev => prev.filter(r => r.id !== restaurant.id))
+    setHistory(prev => prev.filter(r => r.id !== restaurant.id))
+    if (selected?.id === restaurant.id) setSelected(null)
+    setToast('已从餐厅库删除')
+  }
+
   const activeFilterCount = Object.entries(filters).filter(([k, v]) => v !== defaultFilters[k]).length
 
   return (
@@ -104,7 +112,7 @@ function App() {
       <main className="phone-frame">
         {tab === 'home' && <HomeView recommendations={recommendations} onChoose={chooseRestaurant} onReroll={reroll}
           onFilter={() => setShowFilters(true)} activeFilterCount={activeFilterCount} filters={filters} />}
-        {tab === 'library' && <LibraryView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('library')} />}
+        {tab === 'library' && <LibraryView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('library')} onDelete={deleteRestaurant} />}
         {tab === 'wishlist' && <WishlistView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('wishlist')} onChoose={chooseRestaurant} />}
         {tab === 'discover' && <DiscoverView restaurants={restaurants} setRestaurants={setRestaurants} filters={filters} onFilter={() => setShowFilters(true)} onChoose={chooseRestaurant} onNotify={setToast} />}
 
@@ -162,15 +170,21 @@ function HomeView({ recommendations, onChoose, onReroll, onFilter, activeFilterC
 }
 
 function RestaurantRow({ restaurant: r, index, onClick, action }) {
-  return <button className="restaurant-row" onClick={onClick}>
+  function handleKeyDown(event) {
+    if (onClick && (event.key === 'Enter' || event.key === ' ')) {
+      event.preventDefault()
+      onClick()
+    }
+  }
+  return <div className={`restaurant-row ${onClick ? 'clickable' : ''}`} onClick={onClick} onKeyDown={handleKeyDown} role={onClick ? 'button' : undefined} tabIndex={onClick ? 0 : undefined}>
     <div className="row-thumb" style={{ background: r.color }}><span>{r.emoji}</span>{index && <b>0{index}</b>}</div>
     <div className="row-info"><div className="row-title"><h4>{r.name}</h4>{r.wishlist && <span className="wish-pill">想去</span>}</div>
       <p>{r.category} · {r.price ? `¥${r.price}/人` : '人均暂无'}</p><div className="row-meta"><span><Star size={12} fill="currentColor"/> {r.rating || '暂无'}</span><span><MapPin size={12}/>{r.distance}km</span><span>{r.eta}分钟</span></div>
-    </div>{action || <ChevronRight size={18} className="row-arrow"/>}
-  </button>
+    </div>{action || (onClick && <ChevronRight size={18} className="row-arrow"/>)}
+  </div>
 }
 
-function LibraryView({ restaurants, setRestaurants, onAdd }) {
+function LibraryView({ restaurants, setRestaurants, onAdd, onDelete }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('全部')
   const list = restaurants.filter(r => (category === '全部' || r.category === category) && r.name.includes(query))
@@ -180,7 +194,7 @@ function LibraryView({ restaurants, setRestaurants, onAdd }) {
     <div className="library-intro"><div><strong>{restaurants.length}</strong><span>家私藏餐厅</span></div><button onClick={onAdd}><Plus size={17}/> 添加餐厅</button></div>
     <label className="search-box"><Search size={18}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索收藏的餐厅"/></label>
     <div className="category-scroll">{categories.slice(0, 7).map(c => <button className={category === c ? 'active' : ''} onClick={() => setCategory(c)} key={c}>{c}</button>)}</div>
-    <div className="restaurant-list">{list.map(r => <RestaurantRow key={r.id} restaurant={r} action={<button className={`heart-action ${r.wishlist ? 'active' : ''}`} onClick={e => { e.stopPropagation(); toggleWish(r.id) }}><Heart size={18} fill={r.wishlist ? 'currentColor' : 'none'}/></button>} />)}</div>
+    <div className="restaurant-list">{list.map(r => <RestaurantRow key={r.id} restaurant={r} action={<div className="row-actions"><button className={`heart-action ${r.wishlist ? 'active' : ''}`} aria-label={r.wishlist ? '移出待前往' : '加入待前往'} onClick={e => { e.stopPropagation(); toggleWish(r.id) }}><Heart size={18} fill={r.wishlist ? 'currentColor' : 'none'}/></button><button className="delete-action" aria-label={`删除${r.name}`} onClick={e => { e.stopPropagation(); onDelete(r) }}><Trash2 size={17}/></button></div>} />)}</div>
   </div>
 }
 
