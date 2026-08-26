@@ -1,0 +1,13 @@
+{
+  "name": "饭团 · 今天吃什么",
+  "short_name": "饭团",
+  "description": "从喜欢的餐厅里，快速决定今天吃什么。",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f7f4ec",
+  "theme_color": "#d95439",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
