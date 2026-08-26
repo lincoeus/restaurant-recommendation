@@ -5,7 +5,7 @@ import {
   Sparkles, Star, Store, Trash2, Utensils, X,
 } from 'lucide-react'
 import { budgetRanges, categories, defaultFilters, ratingRanges, seedRestaurants } from './data'
-import { hasAmapKey, searchAmapRestaurants } from './services/amap'
+import { discoverAmapRestaurants, hasAmapKey, searchAmapRestaurants } from './services/amap'
 
 const STORAGE_KEY = 'fantuan-restaurants-v1'
 const HISTORY_KEY = 'fantuan-history-v1'
@@ -20,7 +20,7 @@ function App() {
   const [tab, setTab] = useState('home')
   const [filters, setFilters] = useState(defaultFilters)
   const [showFilters, setShowFilters] = useState(false)
-  const [showAdd, setShowAdd] = useState(false)
+  const [showAdd, setShowAdd] = useState(null)
   const [recommendations, setRecommendations] = useState([])
   const [selected, setSelected] = useState(null)
   const [toast, setToast] = useState('')
@@ -83,8 +83,18 @@ function App() {
       tags: data.tags || [], source: data.source || 'manual', location: data.location,
     }
     setRestaurants(prev => [newRestaurant, ...prev.filter(r => r.id !== newRestaurant.id)])
-    setShowAdd(false)
+    setShowAdd(null)
     setToast(data.wishlist ? '已加入待前往，下次优先推荐' : '已加入我的餐厅库')
+  }
+
+  function addExistingToWishlist(id) {
+    setRestaurants(prev => prev.map(r => r.id === id ? {
+      ...r,
+      wishlist: true,
+      reasons: ['待前往', ...(r.reasons || []).filter(reason => reason !== '待前往')].slice(0, 3),
+    } : r))
+    setShowAdd(null)
+    setToast('已从餐厅库加入待前往')
   }
 
   const activeFilterCount = Object.entries(filters).filter(([k, v]) => v !== defaultFilters[k]).length
@@ -94,13 +104,13 @@ function App() {
       <main className="phone-frame">
         {tab === 'home' && <HomeView recommendations={recommendations} onChoose={chooseRestaurant} onReroll={reroll}
           onFilter={() => setShowFilters(true)} activeFilterCount={activeFilterCount} filters={filters} />}
-        {tab === 'library' && <LibraryView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd(true)} />}
-        {tab === 'wishlist' && <WishlistView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd(true)} onChoose={chooseRestaurant} />}
-        {tab === 'discover' && <DiscoverView restaurants={restaurants} setRestaurants={setRestaurants} filters={filters} onFilter={() => setShowFilters(true)} onChoose={chooseRestaurant} />}
+        {tab === 'library' && <LibraryView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('library')} />}
+        {tab === 'wishlist' && <WishlistView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('wishlist')} onChoose={chooseRestaurant} />}
+        {tab === 'discover' && <DiscoverView restaurants={restaurants} setRestaurants={setRestaurants} filters={filters} onFilter={() => setShowFilters(true)} onChoose={chooseRestaurant} onNotify={setToast} />}
 
         <BottomNav tab={tab} setTab={setTab} />
         {showFilters && <FilterSheet filters={filters} setFilters={setFilters} onClose={() => setShowFilters(false)} onApply={() => setShowFilters(false)} />}
-        {showAdd && <AddSheet onClose={() => setShowAdd(false)} onSave={saveRestaurant} />}
+        {showAdd && <AddSheet mode={showAdd} restaurants={restaurants} onClose={() => setShowAdd(null)} onSave={saveRestaurant} onAddExisting={addExistingToWishlist} />}
         {selected && <DecisionSheet restaurant={selected} onClose={() => setSelected(null)} onNavigate={navigateTo} />}
         {toast && <div className="toast"><Check size={16} />{toast}</div>}
       </main>
@@ -185,18 +195,86 @@ function WishlistView({ restaurants, setRestaurants, onAdd, onChoose }) {
   </div>
 }
 
-function DiscoverView({ restaurants, setRestaurants, onFilter, onChoose }) {
-  const newStores = restaurants.filter(r => r.isNew)
-  function addToLibrary(id) { setRestaurants(prev => prev.map(r => r.id === id ? { ...r, isNew: false } : r)) }
+const discoveryColors = ['#405E7B', '#5C7452', '#558C82', '#A97142', '#8B5E68', '#4F6D7A']
+const discoveryEmojis = { '日料': '🍣', '川菜': '🌶️', '本帮菜': '🥘', '云南菜': '🍄', '海南菜': '🥥', '面馆': '🍜', '小吃': '🥟', '西餐': '🍝' }
+
+function DiscoverView({ restaurants, setRestaurants, filters, onFilter, onChoose, onNotify }) {
+  const [amapStores, setAmapStores] = useState([])
+  const [sourceState, setSourceState] = useState(hasAmapKey() ? 'loading' : 'demo')
+  const [sourceError, setSourceError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
+
+  useEffect(() => {
+    if (!hasAmapKey()) { setSourceState('demo'); return }
+    let cancelled = false
+    setSourceState('loading'); setSourceError('')
+    discoverAmapRestaurants(filters.distance)
+      .then(({ pois }) => {
+        if (cancelled) return
+        setAmapStores(pois.map((poi, index) => ({
+          ...poi,
+          id: `amap-${poi.amapId}`,
+          eta: Math.max(5, Math.round(poi.distance * 13)),
+          color: discoveryColors[index % discoveryColors.length],
+          emoji: discoveryEmojis[poi.category] || '🍽️',
+          reasons: [poi.tags?.[0] || '高德附近餐厅', poi.rating ? `评分 ${poi.rating}` : `距离 ${poi.distance}km`],
+          isNew: true,
+          wishlist: false,
+          visits: 0,
+        })))
+        setSourceState('ready')
+      })
+      .catch(error => {
+        if (cancelled) return
+        setSourceError(error.message)
+        setSourceState('error')
+      })
+    return () => { cancelled = true }
+  }, [filters.distance, reloadKey])
+
+  const newStores = useMemo(() => {
+    const rating = ratingRanges.find(range => range.id === filters.rating) || ratingRanges[0]
+    const budget = budgetRanges.find(range => range.id === filters.budget) || budgetRanges[0]
+    const candidates = sourceState === 'ready' ? amapStores : restaurants.filter(r => r.isNew)
+    return candidates.filter(r => {
+      const alreadySaved = sourceState === 'ready' && restaurants.some(saved =>
+        saved.id === r.id || (r.amapId && saved.id === `amap-${r.amapId}`) || saved.name === r.name
+      )
+      if (alreadySaved || r.distance > filters.distance) return false
+      if (filters.category !== '全部' && r.category !== filters.category) return false
+      if (filters.rating !== 'all' && (!r.rating || r.rating < rating.min || r.rating >= rating.max)) return false
+      if (filters.budget !== 'all' && (!r.price || r.price < budget.min || r.price >= budget.max)) return false
+      return true
+    }).slice(0, 12)
+  }, [amapStores, filters, restaurants, sourceState])
+
+  function addToLibrary(restaurant) {
+    setRestaurants(prev => {
+      const existing = prev.find(r => r.id === restaurant.id || r.name === restaurant.name)
+      if (existing) return prev.map(r => r.id === existing.id ? { ...r, isNew: false } : r)
+      return [{ ...restaurant, isNew: false }, ...prev]
+    })
+    onNotify('已加入我的餐厅库')
+  }
+
+  const sourceCopy = sourceState === 'ready'
+    ? ['高德附近餐厅', '已按当前距离、评分、预算和菜系筛选']
+    : sourceState === 'loading'
+      ? ['正在查找附近餐厅', '定位成功后将显示高德地图结果']
+      : sourceState === 'error'
+        ? ['高德服务暂时不可用', `${sourceError}，当前显示本地备用结果`]
+        : ['当前为示例推荐', '配置高德 Web 服务 Key 后将自动推荐真实附近餐厅']
+
   return <div className="view discover-view">
     <Header title="发现新口味" onFilter={onFilter} activeFilterCount={0}/>
     <div className="discover-banner"><div><p><Sparkles size={13}/> 根据你的就餐习惯</p><h3>换个口味，<br/>也许会有惊喜。</h3><span>偏爱：本帮菜 · 日料 · 微辣</span></div><div className="dish-orbit"><b>🥢</b><i>🍄</i><em>🌿</em></div></div>
+    <div className={`discover-source ${sourceState}`}><span><Navigation size={17}/></span><div><strong>{sourceCopy[0]}</strong><small>{sourceCopy[1]}</small></div>{sourceState === 'error' && <button onClick={() => setReloadKey(value => value + 1)}>重试</button>}</div>
     <div className="section-heading"><div><p>FRESH PICKS</p><h3>猜你会喜欢的新店</h3></div><span>{newStores.length} 家待探索</span></div>
-    <div className="new-store-stack">{newStores.map(r => <article className="new-store-card" key={r.id}>
+    {sourceState === 'loading' ? <div className="discover-loading"><span/><span/><span/>正在筛选附近餐厅</div> : newStores.length ? <div className="new-store-stack">{newStores.map(r => <article className="new-store-card" key={r.id}>
       <button className="new-store-main" onClick={() => onChoose(r)}><div className="new-visual" style={{ background: r.color }}><span>{r.emoji}</span><b>NEW</b></div>
       <div className="new-info"><p>{r.category} · {r.distance}km</p><h3>{r.name}</h3><div><span><Star size={13} fill="currentColor"/> {r.rating}</span><span>¥{r.price}/人</span></div><small>{r.reasons.join(' · ')}</small></div></button>
-      <button className="save-new" onClick={() => addToLibrary(r.id)}><CirclePlus size={17}/> 加入餐厅库</button>
-    </article>)}</div>
+      <button className="save-new" onClick={() => addToLibrary(r)}><CirclePlus size={17}/> 加入餐厅库</button>
+    </article>)}</div> : <EmptyState icon="🧭" title="没有符合条件的新餐厅" desc="试试放宽距离、评分或预算" action="调整筛选" onClick={onFilter} />}
   </div>
 }
 
@@ -226,8 +304,9 @@ function FilterGroup({ title, value, options, current, onChange, format }) {
   })}</div></div>
 }
 
-function AddSheet({ onClose, onSave }) {
+function AddSheet({ mode, restaurants, onClose, onSave, onAddExisting }) {
   const configured = hasAmapKey()
+  const isWishlistMode = mode === 'wishlist'
   const demoResults = seedRestaurants.slice(0, 5).map(r => ({ ...r, tags: r.reasons, source: 'demo' }))
   const [step, setStep] = useState('search')
   const [query, setQuery] = useState('')
@@ -235,7 +314,26 @@ function AddSheet({ onClose, onSave }) {
   const [searchState, setSearchState] = useState('idle')
   const [searchError, setSearchError] = useState('')
   const [form, setForm] = useState({ name: '', category: '本帮菜', distance: '1.0', rating: '4.5', price: '60', address: '', emoji: '🍽️', wishlist: true, tags: [], source: 'manual' })
+  const normalizedQuery = query.trim().toLowerCase()
+  const libraryResults = isWishlistMode ? restaurants.filter(r => {
+    if (r.wishlist) return false
+    if (!normalizedQuery) return true
+    return `${r.name}${r.category}${r.address}`.toLowerCase().includes(normalizedQuery)
+  }) : []
   const update = (key, value) => setForm(f => ({ ...f, [key]: value }))
+
+  function findExistingRestaurant(poi) {
+    const poiName = poi.name?.trim().toLowerCase()
+    const poiAddress = poi.address?.trim().toLowerCase()
+    return restaurants.find(r => {
+      if (poi.amapId && (r.amapId === poi.amapId || r.id === `amap-${poi.amapId}`)) return true
+      if (!poiName || r.name.trim().toLowerCase() !== poiName) return false
+      return !poiAddress || !r.address || r.address.trim().toLowerCase() === poiAddress
+    })
+  }
+  const mapResults = isWishlistMode
+    ? results.filter(poi => !findExistingRestaurant(poi)?.wishlist)
+    : results
   async function handleSearch(event) {
     event.preventDefault()
     if (!query.trim()) return
@@ -253,6 +351,11 @@ function AddSheet({ onClose, onSave }) {
     }
   }
   function choosePoi(poi) {
+    const existing = findExistingRestaurant(poi)
+    if (isWishlistMode && existing) {
+      if (!existing.wishlist) onAddExisting(existing.id)
+      return
+    }
     setForm({
       name: poi.name, category: poi.category || '餐饮', distance: poi.distance || 1,
       rating: poi.rating, price: poi.price, address: poi.address || '', emoji: poi.emoji || '🍽️',
@@ -265,16 +368,22 @@ function AddSheet({ onClose, onSave }) {
     setStep('detail')
   }
   return <div className="overlay" onMouseDown={onClose}><section className="sheet add-sheet" onMouseDown={e => e.stopPropagation()}>
-    <div className="sheet-handle"/><div className="sheet-title"><div className="sheet-title-copy">{step === 'detail' && <button className="back-circle" onClick={() => setStep('search')}><ArrowLeft size={18}/></button>}<div><p>{step === 'search' ? '由高德地图提供地点信息' : '确认收藏信息'}</p><h3>{step === 'search' ? '搜索餐厅' : form.name}</h3></div></div><button onClick={onClose}><X size={20}/></button></div>
+    <div className="sheet-handle"/><div className="sheet-title"><div className="sheet-title-copy">{step === 'detail' && <button className="back-circle" onClick={() => setStep('search')}><ArrowLeft size={18}/></button>}<div><p>{step === 'search' ? (isWishlistMode ? '从餐厅库选择，或搜索新餐厅' : '由高德地图提供地点信息') : '确认收藏信息'}</p><h3>{step === 'search' ? (isWishlistMode ? '添加待前往餐厅' : '搜索餐厅') : form.name}</h3></div></div><button onClick={onClose}><X size={20}/></button></div>
     {step === 'search' ? <>
-      <div className={`map-source ${configured ? 'connected' : ''}`}><div className="amap-logo">高德</div><div><strong>{configured ? '高德地图已连接' : '高德地图体验模式'}</strong><small>{configured ? '可自动获得地址、距离、评分与人均消费' : '配置 Web 服务 Key 后即可搜索真实商户'}</small></div><span>{configured ? '已连接' : 'DEMO'}</span></div>
       <form className="place-search" onSubmit={handleSearch}><Search size={19}/><input autoFocus value={query} onChange={e => setQuery(e.target.value)} placeholder="输入餐厅名，例如：烧鸟"/><button disabled={!query.trim() || searchState === 'loading'}>{searchState === 'loading' ? '搜索中' : '搜索'}</button></form>
+      {isWishlistMode && <section className="library-picker">
+        <div className="search-result-head"><strong><Store size={13}/>我的餐厅库</strong><span>{libraryResults.length ? '点击即加入' : (normalizedQuery ? '没有匹配的收藏' : '餐厅都在清单里了')}</span></div>
+        <div className="poi-results">{libraryResults.map(r => <button className="poi-result library-result" key={r.id} onClick={() => onAddExisting(r.id)}>
+          <div className="poi-pin" style={{ background: r.color }}><span>{r.emoji}</span></div><div><h4>{r.name}<b className="saved-badge">已收藏</b></h4><p>{r.category} · {r.distance}km · {r.address}</p><span>{r.rating ? <b><Star size={11} fill="currentColor"/> {r.rating}</b> : '暂无评分'}<i/>{r.price ? `¥${r.price}/人` : '暂无人均'}</span></div><Heart size={17}/>
+        </button>)}</div>
+      </section>}
+      <div className={`map-source ${configured ? 'connected' : ''}`}><div className="amap-logo">高德</div><div><strong>{configured ? '高德地图已连接' : '高德地图体验模式'}</strong><small>{configured ? '搜索餐厅库以外的新餐厅' : '配置 Web 服务 Key 后即可搜索真实商户'}</small></div><span>{configured ? '已连接' : 'DEMO'}</span></div>
       {searchError && <div className="search-error">{searchError}，你也可以手动填写。</div>}
-      <div className="search-result-head"><strong>{query ? '搜索结果' : '附近餐厅示例'}</strong><button onClick={manualEntry}>找不到？手动添加</button></div>
-      <div className="poi-results">{results.map(poi => <button className="poi-result" key={poi.amapId || poi.id} onClick={() => choosePoi(poi)}>
-        <div className="poi-pin"><MapPin size={18}/></div><div><h4>{poi.name}</h4><p>{poi.category} · {poi.distance}km · {poi.address}</p><span>{poi.rating ? <b><Star size={11} fill="currentColor"/> {poi.rating}</b> : '暂无评分'}<i/>{poi.price ? `¥${poi.price}/人` : '暂无人均'} </span></div><ChevronRight size={17}/>
+      <div className="search-result-head"><strong>{query ? '高德搜索结果' : '附近餐厅示例'}</strong><button onClick={manualEntry}>找不到？手动添加</button></div>
+      <div className="poi-results">{mapResults.map(poi => <button className="poi-result" key={poi.amapId || poi.id} onClick={() => choosePoi(poi)}>
+        <div className="poi-pin"><MapPin size={18}/></div><div><h4>{poi.name}{findExistingRestaurant(poi) && <b className="saved-badge">已收藏</b>}</h4><p>{poi.category} · {poi.distance}km · {poi.address}</p><span>{poi.rating ? <b><Star size={11} fill="currentColor"/> {poi.rating}</b> : '暂无评分'}<i/>{poi.price ? `¥${poi.price}/人` : '暂无人均'} </span></div><ChevronRight size={17}/>
       </button>)}</div>
-      {searchState === 'done' && !results.length && <div className="no-poi">没有找到相关餐厅，试试简称或手动添加</div>}
+      {searchState === 'done' && !mapResults.length && <div className="no-poi">没有找到新的餐厅，试试简称或手动添加</div>}
     </> : <>
       {form.source !== 'manual' && <div className="imported-note"><Check size={15}/><span>已带入{form.source === 'amap' ? '高德地图' : '示例'}标签信息</span>{form.tags?.slice(0, 2).map(tag => <b key={tag}>{tag}</b>)}</div>}
       <label className="form-field featured"><span>餐厅名称</span><input value={form.name} onChange={e => update('name', e.target.value)} placeholder="餐厅名称"/></label>

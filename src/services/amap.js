@@ -64,3 +64,23 @@ export async function searchAmapRestaurants(keyword) {
   if (data.status !== '1') throw new Error(data.info || '未能获取地点信息')
   return { configured: true, pois: (data.pois || []).map(normalizePoi) }
 }
+
+export async function discoverAmapRestaurants(radiusKm = 3) {
+  if (!AMAP_KEY) return { configured: false, pois: [] }
+  const location = await getBrowserLocation()
+  const radius = Math.min(50000, Math.max(1000, Math.round(Number(radiusKm || 3) * 1000)))
+  const params = new URLSearchParams({
+    key: AMAP_KEY,
+    types: '050000',
+    location,
+    radius: String(radius),
+    sortrule: 'distance',
+    show_fields: 'business',
+    page_size: '25',
+  })
+  const response = await fetch(`https://restapi.amap.com/v5/place/around?${params}`)
+  if (!response.ok) throw new Error('高德服务暂时不可用')
+  const data = await response.json()
+  if (data.status !== '1') throw new Error(data.info || '未能获取附近餐厅')
+  return { configured: true, pois: (data.pois || []).map(normalizePoi) }
+}
