@@ -8,12 +8,38 @@ import { budgetRanges, categories, defaultFilters, distanceRanges, ratingRanges,
 import { discoverAmapRestaurants, hasAmapKey, resolveBrowserLocation, searchAmapLocations, searchAmapRestaurants } from './services/amap'
 
 const STORAGE_KEY = 'fantuan-restaurants-v1'
+const RESTAURANT_SEED_VERSION_KEY = 'fantuan-restaurants-seed-version'
+const RESTAURANT_SEED_VERSION = 3
+const LEGACY_SAMPLE_IDS = new Set(['r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7', 'r8'])
 const HISTORY_KEY = 'fantuan-history-v1'
 const LOCATION_KEY = 'fantuan-location-v1'
 const DEFAULT_LOCATION = { name: '中山公园', city: '上海', district: '长宁区', address: '上海市长宁区中山公园', coordinates: '121.415,31.218' }
 
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback } catch { return fallback }
+}
+
+function loadRestaurants() {
+  const saved = load(STORAGE_KEY, null)
+  if (!Array.isArray(saved)) {
+    try { localStorage.setItem(RESTAURANT_SEED_VERSION_KEY, String(RESTAURANT_SEED_VERSION)) } catch { /* storage unavailable */ }
+    return seedRestaurants
+  }
+
+  let savedVersion = 1
+  try { savedVersion = Number(localStorage.getItem(RESTAURANT_SEED_VERSION_KEY) || 1) } catch { /* storage unavailable */ }
+  if (savedVersion >= RESTAURANT_SEED_VERSION) return saved
+
+  const retained = saved.filter(restaurant => !LEGACY_SAMPLE_IDS.has(restaurant.id))
+  const existingIds = new Set(retained.flatMap(restaurant => [restaurant.id, restaurant.amapId].filter(Boolean)))
+  const existingNames = new Set(retained.map(restaurant => restaurant.name))
+  const additions = seedRestaurants.filter(restaurant =>
+    restaurant.seedVersion > savedVersion &&
+    !existingIds.has(restaurant.id) && !existingIds.has(restaurant.amapId) &&
+    !existingNames.has(restaurant.name)
+  )
+  try { localStorage.setItem(RESTAURANT_SEED_VERSION_KEY, String(RESTAURANT_SEED_VERSION)) } catch { /* storage unavailable */ }
+  return [...additions, ...retained]
 }
 
 function distanceBetween(start, end) {
@@ -29,7 +55,7 @@ function distanceBetween(start, end) {
 }
 
 function App() {
-  const [restaurants, setRestaurants] = useState(() => load(STORAGE_KEY, seedRestaurants))
+  const [restaurants, setRestaurants] = useState(loadRestaurants)
   const [history, setHistory] = useState(() => load(HISTORY_KEY, []))
   const [location, setLocation] = useState(() => load(LOCATION_KEY, DEFAULT_LOCATION))
   const [tab, setTab] = useState('home')
@@ -256,7 +282,7 @@ function LibraryView({ restaurants, setRestaurants, onAdd, onDelete, onEdit, loc
     <Header title="我的餐厅库" location={location} onLocation={onLocation} />
     <div className="library-intro"><div><strong>{restaurants.length}</strong><span>家私藏餐厅</span></div><button onClick={onAdd}><Plus size={17}/> 添加餐厅</button></div>
     <label className="search-box"><Search size={18}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索收藏的餐厅"/></label>
-    <div className="category-scroll">{categories.slice(0, 7).map(c => <button className={category === c ? 'active' : ''} onClick={() => setCategory(c)} key={c}>{c}</button>)}</div>
+    <div className="category-scroll">{categories.map(c => <button className={category === c ? 'active' : ''} onClick={() => setCategory(c)} key={c}>{c}</button>)}</div>
     <div className="swipe-tip">左滑餐厅可编辑或删除</div>
     <div className="restaurant-list">{list.map(r => <SwipeableLibraryRow key={r.id} restaurant={r} open={openRowId === r.id} onOpen={() => setOpenRowId(r.id)} onClose={() => setOpenRowId(null)} onToggleWish={() => toggleWish(r.id)} onEdit={() => { setOpenRowId(null); onEdit(r) }} onDelete={() => { setOpenRowId(null); onDelete(r) }} />)}</div>
   </div>
@@ -380,7 +406,7 @@ function DiscoverView({ restaurants, setRestaurants, filters, activeFilterCount,
       ? ['正在查找附近餐厅', '定位成功后将显示高德地图结果']
       : sourceState === 'error'
         ? ['高德服务暂时不可用', `${sourceError}，当前显示本地备用结果`]
-        : ['当前为示例推荐', '配置高德 Web 服务 Key 后将自动推荐真实附近餐厅']
+        : ['等待获取附近餐厅', '配置高德 Web 服务 Key 后将自动推荐真实附近餐厅']
 
   return <div className="view discover-view">
     <Header title="发现新口味" onFilter={onFilter} activeFilterCount={activeFilterCount} location={location} onLocation={onLocation}/>
@@ -408,7 +434,7 @@ function FilterSheet({ filters, setFilters, onClose, onApply }) {
     <FilterGroup title="距离" value={filters.distance === 'all' ? '不限' : `${filters.distance}km 内`} options={distanceRanges} current={filters.distance} onChange={v => setFilters(f => ({ ...f, distance: v }))} />
     <FilterGroup title="评分区间" value={ratingLabel} options={ratingRanges} current={filters.rating} onChange={v => setFilters(f => ({ ...f, rating: v }))} />
     <FilterGroup title="人均消费区间" value={budgetLabel} options={budgetRanges} current={filters.budget} onChange={v => setFilters(f => ({ ...f, budget: v }))} />
-    <div className="filter-group"><div className="filter-label"><h4>口味</h4><span>{filters.category}</span></div><div className="category-grid">{categories.slice(0, 8).map(c => <button key={c} className={filters.category === c ? 'active' : ''} onClick={() => setFilters(f => ({ ...f, category: c }))}>{c}</button>)}</div></div>
+    <div className="filter-group"><div className="filter-label"><h4>口味</h4><span>{filters.category}</span></div><div className="category-grid">{categories.map(c => <button key={c} className={filters.category === c ? 'active' : ''} onClick={() => setFilters(f => ({ ...f, category: c }))}>{c}</button>)}</div></div>
     <div className="sheet-actions"><button className="reset" onClick={() => setFilters(defaultFilters)}>重置</button><button className="primary" onClick={onApply}>看看吃什么</button></div>
   </section></div>
 }
