@@ -58,4 +58,11 @@ export const budgetRanges = [
 ]
 
 export const defaultFilters = { distance: 3, rating: 'all', budget: 'all', category: '全部' }
+export const distanceRanges = [
+  { id: 'all', label: '不限' },
+  { id: 1, label: '1km' },
+  { id: 3, label: '3km' },
+  { id: 5, label: '5km' },
+  { id: 10, label: '10km' },
+]
 export const categories = ['全部', '本帮菜', '日料', '川菜', '西餐', '小吃', '云南菜', '海南菜', '面馆']

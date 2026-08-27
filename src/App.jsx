@@ -1,43 +1,68 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowLeft, BookmarkPlus, Check, ChevronDown, ChevronRight, CirclePlus, Compass,
   Heart, Home, LocateFixed, MapPin, Navigation, Plus, RotateCcw, Search, SlidersHorizontal,
-  Sparkles, Star, Store, Trash2, Utensils, X,
+  Sparkles, Star, Store, Trash2, Utensils, X, Pencil,
 } from 'lucide-react'
-import { budgetRanges, categories, defaultFilters, ratingRanges, seedRestaurants } from './data'
-import { discoverAmapRestaurants, hasAmapKey, searchAmapRestaurants } from './services/amap'
+import { budgetRanges, categories, defaultFilters, distanceRanges, ratingRanges, seedRestaurants } from './data'
+import { discoverAmapRestaurants, hasAmapKey, resolveBrowserLocation, searchAmapLocations, searchAmapRestaurants } from './services/amap'
 
 const STORAGE_KEY = 'fantuan-restaurants-v1'
 const HISTORY_KEY = 'fantuan-history-v1'
+const LOCATION_KEY = 'fantuan-location-v1'
+const DEFAULT_LOCATION = { name: '中山公园', city: '上海', district: '长宁区', address: '上海市长宁区中山公园', coordinates: '121.415,31.218' }
 
 function load(key, fallback) {
   try { return JSON.parse(localStorage.getItem(key)) ?? fallback } catch { return fallback }
 }
 
+function distanceBetween(start, end) {
+  if (!start || !end) return null
+  const [startLng, startLat] = String(start).split(',').map(Number)
+  const [endLng, endLat] = String(end).split(',').map(Number)
+  if (![startLng, startLat, endLng, endLat].every(Number.isFinite)) return null
+  const toRadians = value => value * Math.PI / 180
+  const latitudeDelta = toRadians(endLat - startLat)
+  const longitudeDelta = toRadians(endLng - startLng)
+  const a = Math.sin(latitudeDelta / 2) ** 2 + Math.cos(toRadians(startLat)) * Math.cos(toRadians(endLat)) * Math.sin(longitudeDelta / 2) ** 2
+  return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
 function App() {
   const [restaurants, setRestaurants] = useState(() => load(STORAGE_KEY, seedRestaurants))
   const [history, setHistory] = useState(() => load(HISTORY_KEY, []))
+  const [location, setLocation] = useState(() => load(LOCATION_KEY, DEFAULT_LOCATION))
   const [tab, setTab] = useState('home')
   const [filters, setFilters] = useState(defaultFilters)
   const [showFilters, setShowFilters] = useState(false)
   const [showAdd, setShowAdd] = useState(null)
+  const [showLocation, setShowLocation] = useState(false)
+  const [editingRestaurant, setEditingRestaurant] = useState(null)
   const [recommendations, setRecommendations] = useState([])
   const [selected, setSelected] = useState(null)
   const [toast, setToast] = useState('')
 
   useEffect(() => localStorage.setItem(STORAGE_KEY, JSON.stringify(restaurants)), [restaurants])
   useEffect(() => localStorage.setItem(HISTORY_KEY, JSON.stringify(history)), [history])
+  useEffect(() => localStorage.setItem(LOCATION_KEY, JSON.stringify(location)), [location])
   useEffect(() => { if (toast) { const id = setTimeout(() => setToast(''), 2400); return () => clearTimeout(id) } }, [toast])
+
+  const locatedRestaurants = useMemo(() => restaurants.map(restaurant => {
+    const recalculatedDistance = distanceBetween(location.coordinates, restaurant.location)
+    if (recalculatedDistance === null) return restaurant
+    const distance = Number(Math.max(0.1, recalculatedDistance).toFixed(1))
+    return { ...restaurant, distance, eta: Math.max(5, Math.round(distance * 13)) }
+  }), [restaurants, location.coordinates])
 
   const filtered = useMemo(() => {
     const rating = ratingRanges.find(range => range.id === filters.rating) || ratingRanges[0]
     const budget = budgetRanges.find(range => range.id === filters.budget) || budgetRanges[0]
-    return restaurants.filter(r =>
-      r.distance <= filters.distance && r.rating >= rating.min && r.rating < rating.max &&
+    return locatedRestaurants.filter(r =>
+      (filters.distance === 'all' || r.distance <= filters.distance) && r.rating >= rating.min && r.rating < rating.max &&
       r.price >= budget.min && r.price < budget.max &&
       (filters.category === '全部' || r.category === filters.category)
     )
-  }, [restaurants, filters])
+  }, [locatedRestaurants, filters])
 
   function scoreRestaurant(r) {
     const lastIndex = history.findIndex(h => h.id === r.id)
@@ -113,20 +138,48 @@ function App() {
     setToast('已从餐厅库删除')
   }
 
+  function updateRestaurant(data) {
+    const distance = Number(data.distance) || 0
+    const updated = {
+      ...data,
+      distance,
+      rating: Number(data.rating) || 0,
+      price: Number(data.price) || 0,
+      eta: Math.max(5, Math.round(distance * 13)),
+      address: data.address || '地址待补充',
+      emoji: data.emoji || '🍽️',
+      reasons: data.wishlist
+        ? ['待前往', ...(data.reasons || []).filter(reason => reason !== '待前往')].slice(0, 3)
+        : (data.reasons || []).filter(reason => reason !== '待前往'),
+    }
+    setRestaurants(prev => prev.map(r => r.id === updated.id ? updated : r))
+    setHistory(prev => prev.map(r => r.id === updated.id ? { ...r, ...updated } : r))
+    setEditingRestaurant(null)
+    setToast('餐厅信息已更新')
+  }
+
+  function chooseLocation(nextLocation) {
+    setLocation(nextLocation)
+    setShowLocation(false)
+    setToast(`已切换到${nextLocation.name}`)
+  }
+
   const activeFilterCount = Object.entries(filters).filter(([k, v]) => v !== defaultFilters[k]).length
 
   return (
     <div className="app-shell">
       <main className="phone-frame">
         {tab === 'home' && <HomeView recommendations={recommendations} onChoose={chooseRestaurant} onReroll={reroll}
-          onFilter={() => setShowFilters(true)} activeFilterCount={activeFilterCount} filters={filters} />}
-        {tab === 'library' && <LibraryView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('library')} onDelete={deleteRestaurant} />}
-        {tab === 'wishlist' && <WishlistView restaurants={restaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('wishlist')} onChoose={chooseRestaurant} />}
-        {tab === 'discover' && <DiscoverView restaurants={restaurants} setRestaurants={setRestaurants} filters={filters} onFilter={() => setShowFilters(true)} onChoose={chooseRestaurant} onNotify={setToast} />}
+          onFilter={() => setShowFilters(true)} activeFilterCount={activeFilterCount} filters={filters} location={location} onLocation={() => setShowLocation(true)} />}
+        {tab === 'library' && <LibraryView restaurants={locatedRestaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('library')} onDelete={deleteRestaurant} onEdit={setEditingRestaurant} location={location} onLocation={() => setShowLocation(true)} />}
+        {tab === 'wishlist' && <WishlistView restaurants={locatedRestaurants} setRestaurants={setRestaurants} onAdd={() => setShowAdd('wishlist')} onChoose={chooseRestaurant} location={location} onLocation={() => setShowLocation(true)} />}
+        {tab === 'discover' && <DiscoverView restaurants={locatedRestaurants} setRestaurants={setRestaurants} filters={filters} activeFilterCount={activeFilterCount} onFilter={() => setShowFilters(true)} onChoose={chooseRestaurant} onNotify={setToast} location={location} onLocation={() => setShowLocation(true)} />}
 
         <BottomNav tab={tab} setTab={setTab} />
         {showFilters && <FilterSheet filters={filters} setFilters={setFilters} onClose={() => setShowFilters(false)} onApply={() => setShowFilters(false)} />}
-        {showAdd && <AddSheet mode={showAdd} restaurants={restaurants} onClose={() => setShowAdd(null)} onSave={saveRestaurant} onAddExisting={addExistingToWishlist} />}
+        {showAdd && <AddSheet mode={showAdd} restaurants={locatedRestaurants} location={location} onClose={() => setShowAdd(null)} onSave={saveRestaurant} onAddExisting={addExistingToWishlist} />}
+        {showLocation && <LocationSheet current={location} onClose={() => setShowLocation(false)} onChoose={chooseLocation} />}
+        {editingRestaurant && <EditRestaurantSheet restaurant={editingRestaurant} onClose={() => setEditingRestaurant(null)} onSave={updateRestaurant} />}
         {selected && <DecisionSheet restaurant={selected} onClose={() => setSelected(null)} onNavigate={navigateTo} />}
         {toast && <div className="toast"><Check size={16} />{toast}</div>}
       </main>
@@ -141,20 +194,20 @@ function App() {
   )
 }
 
-function Header({ onFilter, activeFilterCount, title = '今天吃什么' }) {
+function Header({ onFilter, activeFilterCount, title = '今天吃什么', location, onLocation }) {
   return <header className="topbar">
-    <div><p className="location"><LocateFixed size={13} /> 上海 · 中山公园 <ChevronDown size={13} /></p><h2>{title}</h2></div>
+    <div><button className="location" onClick={onLocation}><LocateFixed size={13} /> {location.city ? `${location.city} · ` : ''}{location.name} <ChevronDown size={13} /></button><h2>{title}</h2></div>
     {onFilter && <button className="icon-btn" onClick={onFilter} aria-label="筛选"><SlidersHorizontal size={20}/>{activeFilterCount > 0 && <b>{activeFilterCount}</b>}</button>}
   </header>
 }
 
-function HomeView({ recommendations, onChoose, onReroll, onFilter, activeFilterCount, filters }) {
+function HomeView({ recommendations, onChoose, onReroll, onFilter, activeFilterCount, filters, location, onLocation }) {
   const main = recommendations[0]
   const budgetLabel = budgetRanges.find(range => range.id === filters.budget)?.label || '不限'
   const ratingLabel = ratingRanges.find(range => range.id === filters.rating)?.label || '不限'
   return <div className="view home-view">
-    <Header onFilter={onFilter} activeFilterCount={activeFilterCount} />
-    <div className="filter-summary"><span>{filters.distance}km 内</span><i/><span>{ratingLabel === '不限' ? '不限评分' : `${ratingLabel}分`}</span><i/><span>{budgetLabel === '不限' ? '不限预算' : budgetLabel}</span><i/><span>{filters.category}</span></div>
+    <Header onFilter={onFilter} activeFilterCount={activeFilterCount} location={location} onLocation={onLocation} />
+    <div className="filter-summary"><span>{filters.distance === 'all' ? '不限距离' : `${filters.distance}km 内`}</span><i/><span>{ratingLabel === '不限' ? '不限评分' : `${ratingLabel}分`}</span><i/><span>{budgetLabel === '不限' ? '不限预算' : budgetLabel}</span><i/><span>{filters.category}</span></div>
     {!main ? <EmptyState icon="🍽️" title="没有符合条件的餐厅" desc="试试放宽距离或预算" action="调整筛选" onClick={onFilter} /> : <>
       <section className="hero-card" style={{ '--card-color': main.color }}>
         <div className="hero-pattern"><span>{main.emoji}</span></div>
@@ -192,25 +245,67 @@ function RestaurantRow({ restaurant: r, index, onClick, action }) {
   </div>
 }
 
-function LibraryView({ restaurants, setRestaurants, onAdd, onDelete }) {
+function LibraryView({ restaurants, setRestaurants, onAdd, onDelete, onEdit, location, onLocation }) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('全部')
+  const [openRowId, setOpenRowId] = useState(null)
   const list = restaurants.filter(r => (category === '全部' || r.category === category) && r.name.includes(query))
   function toggleWish(id) { setRestaurants(prev => prev.map(r => r.id === id ? { ...r, wishlist: !r.wishlist } : r)) }
+  useEffect(() => setOpenRowId(null), [query, category])
   return <div className="view list-view">
-    <Header title="我的餐厅库" />
+    <Header title="我的餐厅库" location={location} onLocation={onLocation} />
     <div className="library-intro"><div><strong>{restaurants.length}</strong><span>家私藏餐厅</span></div><button onClick={onAdd}><Plus size={17}/> 添加餐厅</button></div>
     <label className="search-box"><Search size={18}/><input value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索收藏的餐厅"/></label>
     <div className="category-scroll">{categories.slice(0, 7).map(c => <button className={category === c ? 'active' : ''} onClick={() => setCategory(c)} key={c}>{c}</button>)}</div>
-    <div className="restaurant-list">{list.map(r => <RestaurantRow key={r.id} restaurant={r} action={<div className="row-actions"><button className={`heart-action ${r.wishlist ? 'active' : ''}`} aria-label={r.wishlist ? '移出待前往' : '加入待前往'} onClick={e => { e.stopPropagation(); toggleWish(r.id) }}><Heart size={18} fill={r.wishlist ? 'currentColor' : 'none'}/></button><button className="delete-action" aria-label={`删除${r.name}`} onClick={e => { e.stopPropagation(); onDelete(r) }}><Trash2 size={17}/></button></div>} />)}</div>
+    <div className="swipe-tip">左滑餐厅可编辑或删除</div>
+    <div className="restaurant-list">{list.map(r => <SwipeableLibraryRow key={r.id} restaurant={r} open={openRowId === r.id} onOpen={() => setOpenRowId(r.id)} onClose={() => setOpenRowId(null)} onToggleWish={() => toggleWish(r.id)} onEdit={() => { setOpenRowId(null); onEdit(r) }} onDelete={() => { setOpenRowId(null); onDelete(r) }} />)}</div>
   </div>
 }
 
-function WishlistView({ restaurants, setRestaurants, onAdd, onChoose }) {
+function SwipeableLibraryRow({ restaurant, open, onOpen, onClose, onToggleWish, onEdit, onDelete }) {
+  const start = useRef(null)
+  const [dragOffset, setDragOffset] = useState(null)
+  const actionWidth = 132
+  function handleTouchStart(event) {
+    const touch = event.touches[0]
+    start.current = { x: touch.clientX, y: touch.clientY, base: open ? -actionWidth : 0, horizontal: null }
+    setDragOffset(open ? -actionWidth : 0)
+  }
+  function handleTouchMove(event) {
+    if (!start.current) return
+    const touch = event.touches[0]
+    const deltaX = touch.clientX - start.current.x
+    const deltaY = touch.clientY - start.current.y
+    if (start.current.horizontal === null && (Math.abs(deltaX) > 5 || Math.abs(deltaY) > 5)) {
+      start.current.horizontal = Math.abs(deltaX) > Math.abs(deltaY)
+    }
+    if (!start.current.horizontal) return
+    setDragOffset(Math.max(-actionWidth, Math.min(0, start.current.base + deltaX)))
+  }
+  function handleTouchEnd() {
+    if (dragOffset === null) return
+    if (dragOffset < -actionWidth / 2) onOpen()
+    else onClose()
+    start.current = null
+    setDragOffset(null)
+  }
+  const offset = dragOffset ?? (open ? -actionWidth : 0)
+  return <div className={`swipe-row ${open ? 'open' : ''}`}>
+    <div className="swipe-actions" aria-hidden={!open}>
+      <button className="swipe-edit" tabIndex={open ? 0 : -1} onClick={onEdit}><Pencil size={17}/><span>编辑</span></button>
+      <button className="swipe-delete" tabIndex={open ? 0 : -1} onClick={onDelete}><Trash2 size={17}/><span>删除</span></button>
+    </div>
+    <div className={`swipe-foreground ${dragOffset !== null ? 'dragging' : ''}`} style={{ transform: `translateX(${offset}px)` }} onTouchStart={handleTouchStart} onTouchMove={handleTouchMove} onTouchEnd={handleTouchEnd} onTouchCancel={handleTouchEnd} onClick={open ? onClose : undefined}>
+      <RestaurantRow restaurant={restaurant} action={<button className={`heart-action ${restaurant.wishlist ? 'active' : ''}`} aria-label={restaurant.wishlist ? '移出待前往' : '加入待前往'} onClick={event => { event.stopPropagation(); onToggleWish() }}><Heart size={18} fill={restaurant.wishlist ? 'currentColor' : 'none'}/></button>} />
+    </div>
+  </div>
+}
+
+function WishlistView({ restaurants, setRestaurants, onAdd, onChoose, location, onLocation }) {
   const list = restaurants.filter(r => r.wishlist)
   function remove(id) { setRestaurants(prev => prev.map(r => r.id === id ? { ...r, wishlist: false } : r)) }
   return <div className="view list-view">
-    <Header title="待前往清单" />
+    <Header title="待前往清单" location={location} onLocation={onLocation} />
     <div className="wish-hero"><span><BookmarkPlus size={24}/></span><div><h3>想到就先记下来</h3><p>下次推荐时，我们会优先安排</p></div><button onClick={onAdd}><Plus size={18}/></button></div>
     <div className="section-heading compact"><div><p>WANT TO GO</p><h3>{list.length} 家餐厅等你打卡</h3></div></div>
     {list.length ? <div className="restaurant-list">{list.map(r => <RestaurantRow key={r.id} restaurant={r} onClick={() => onChoose(r)} action={<button className="trash-action" onClick={e => { e.stopPropagation(); remove(r.id) }}><Trash2 size={17}/></button>} />)}</div> : <EmptyState icon="📌" title="清单还是空的" desc="把突然想起的餐厅先放进来" action="添加一家" onClick={onAdd} />}
@@ -220,7 +315,7 @@ function WishlistView({ restaurants, setRestaurants, onAdd, onChoose }) {
 const discoveryColors = ['#405E7B', '#5C7452', '#558C82', '#A97142', '#8B5E68', '#4F6D7A']
 const discoveryEmojis = { '日料': '🍣', '川菜': '🌶️', '本帮菜': '🥘', '云南菜': '🍄', '海南菜': '🥥', '面馆': '🍜', '小吃': '🥟', '西餐': '🍝' }
 
-function DiscoverView({ restaurants, setRestaurants, filters, onFilter, onChoose, onNotify }) {
+function DiscoverView({ restaurants, setRestaurants, filters, activeFilterCount, onFilter, onChoose, onNotify, location, onLocation }) {
   const [amapStores, setAmapStores] = useState([])
   const [sourceState, setSourceState] = useState(hasAmapKey() ? 'loading' : 'demo')
   const [sourceError, setSourceError] = useState('')
@@ -230,7 +325,7 @@ function DiscoverView({ restaurants, setRestaurants, filters, onFilter, onChoose
     if (!hasAmapKey()) { setSourceState('demo'); return }
     let cancelled = false
     setSourceState('loading'); setSourceError('')
-    discoverAmapRestaurants(filters.distance)
+    discoverAmapRestaurants(filters.distance === 'all' ? 50 : filters.distance, location.coordinates)
       .then(({ pois }) => {
         if (cancelled) return
         setAmapStores(pois.map((poi, index) => ({
@@ -252,7 +347,7 @@ function DiscoverView({ restaurants, setRestaurants, filters, onFilter, onChoose
         setSourceState('error')
       })
     return () => { cancelled = true }
-  }, [filters.distance, reloadKey])
+  }, [filters.distance, location.coordinates, reloadKey])
 
   const newStores = useMemo(() => {
     const rating = ratingRanges.find(range => range.id === filters.rating) || ratingRanges[0]
@@ -262,7 +357,7 @@ function DiscoverView({ restaurants, setRestaurants, filters, onFilter, onChoose
       const alreadySaved = sourceState === 'ready' && restaurants.some(saved =>
         saved.id === r.id || (r.amapId && saved.id === `amap-${r.amapId}`) || saved.name === r.name
       )
-      if (alreadySaved || r.distance > filters.distance) return false
+      if (alreadySaved || (filters.distance !== 'all' && r.distance > filters.distance)) return false
       if (filters.category !== '全部' && r.category !== filters.category) return false
       if (filters.rating !== 'all' && (!r.rating || r.rating < rating.min || r.rating >= rating.max)) return false
       if (filters.budget !== 'all' && (!r.price || r.price < budget.min || r.price >= budget.max)) return false
@@ -288,7 +383,7 @@ function DiscoverView({ restaurants, setRestaurants, filters, onFilter, onChoose
         : ['当前为示例推荐', '配置高德 Web 服务 Key 后将自动推荐真实附近餐厅']
 
   return <div className="view discover-view">
-    <Header title="发现新口味" onFilter={onFilter} activeFilterCount={0}/>
+    <Header title="发现新口味" onFilter={onFilter} activeFilterCount={activeFilterCount} location={location} onLocation={onLocation}/>
     <div className="discover-banner"><div><p><Sparkles size={13}/> 根据你的就餐习惯</p><h3>换个口味，<br/>也许会有惊喜。</h3><span>偏爱：本帮菜 · 日料 · 微辣</span></div><div className="dish-orbit"><b>🥢</b><i>🍄</i><em>🌿</em></div></div>
     <div className={`discover-source ${sourceState}`}><span><Navigation size={17}/></span><div><strong>{sourceCopy[0]}</strong><small>{sourceCopy[1]}</small></div>{sourceState === 'error' && <button onClick={() => setReloadKey(value => value + 1)}>重试</button>}</div>
     <div className="section-heading"><div><p>FRESH PICKS</p><h3>猜你会喜欢的新店</h3></div><span>{newStores.length} 家待探索</span></div>
@@ -310,7 +405,7 @@ function FilterSheet({ filters, setFilters, onClose, onApply }) {
   const budgetLabel = budgetRanges.find(range => range.id === filters.budget)?.label || '不限'
   return <div className="overlay" onMouseDown={onClose}><section className="sheet filter-sheet" onMouseDown={e => e.stopPropagation()}>
     <div className="sheet-handle"/><div className="sheet-title"><div><p>缩小范围，更快决定</p><h3>筛选餐厅</h3></div><button onClick={onClose}><X size={20}/></button></div>
-    <FilterGroup title="距离" value={`${filters.distance}km 内`} options={[1, 3, 5, 10]} current={filters.distance} onChange={v => setFilters(f => ({ ...f, distance: v }))} format={v => `${v}km`} />
+    <FilterGroup title="距离" value={filters.distance === 'all' ? '不限' : `${filters.distance}km 内`} options={distanceRanges} current={filters.distance} onChange={v => setFilters(f => ({ ...f, distance: v }))} />
     <FilterGroup title="评分区间" value={ratingLabel} options={ratingRanges} current={filters.rating} onChange={v => setFilters(f => ({ ...f, rating: v }))} />
     <FilterGroup title="人均消费区间" value={budgetLabel} options={budgetRanges} current={filters.budget} onChange={v => setFilters(f => ({ ...f, budget: v }))} />
     <div className="filter-group"><div className="filter-label"><h4>口味</h4><span>{filters.category}</span></div><div className="category-grid">{categories.slice(0, 8).map(c => <button key={c} className={filters.category === c ? 'active' : ''} onClick={() => setFilters(f => ({ ...f, category: c }))}>{c}</button>)}</div></div>
@@ -326,7 +421,7 @@ function FilterGroup({ title, value, options, current, onChange, format }) {
   })}</div></div>
 }
 
-function AddSheet({ mode, restaurants, onClose, onSave, onAddExisting }) {
+function AddSheet({ mode, restaurants, location, onClose, onSave, onAddExisting }) {
   const configured = hasAmapKey()
   const isWishlistMode = mode === 'wishlist'
   const demoResults = seedRestaurants.slice(0, 5).map(r => ({ ...r, tags: r.reasons, source: 'demo' }))
@@ -366,7 +461,7 @@ function AddSheet({ mode, restaurants, onClose, onSave, onAddExisting }) {
       return
     }
     try {
-      const response = await searchAmapRestaurants(query.trim())
+      const response = await searchAmapRestaurants(query.trim(), location.coordinates)
       setResults(response.pois); setSearchState('done')
     } catch (error) {
       setSearchError(error.message); setSearchState('error')
@@ -416,6 +511,73 @@ function AddSheet({ mode, restaurants, onClose, onSave, onAddExisting }) {
       {(form.rating === '' || form.price === '') && <div className="field-hint">高德未提供完整消费标签，请补充评分和人均后保存。</div>}
       <button className="save-btn" disabled={!form.name.trim() || form.rating === '' || form.price === ''} onClick={() => onSave(form)}>保存到餐厅库</button>
     </>}
+  </section></div>
+}
+
+const quickLocations = [
+  DEFAULT_LOCATION,
+  { name: '人民广场', city: '上海', district: '黄浦区', address: '上海市黄浦区人民广场', coordinates: '121.475,31.233' },
+  { name: '徐家汇', city: '上海', district: '徐汇区', address: '上海市徐汇区徐家汇', coordinates: '121.437,31.195' },
+  { name: '陆家嘴', city: '上海', district: '浦东新区', address: '上海市浦东新区陆家嘴', coordinates: '121.502,31.239' },
+]
+
+function LocationSheet({ current, onClose, onChoose }) {
+  const configured = hasAmapKey()
+  const [query, setQuery] = useState('')
+  const [results, setResults] = useState([])
+  const [state, setState] = useState('idle')
+  const [error, setError] = useState('')
+  async function useCurrentLocation() {
+    setState('locating'); setError('')
+    try {
+      const nextLocation = await resolveBrowserLocation()
+      onChoose(nextLocation)
+    } catch (reason) {
+      setError(reason.message)
+      setState('error')
+    }
+  }
+  async function handleSearch(event) {
+    event.preventDefault()
+    if (!query.trim()) return
+    setState('searching'); setError('')
+    if (!configured) {
+      const matches = quickLocations.filter(item => `${item.city}${item.district}${item.name}${item.address}`.includes(query.trim()))
+      setResults(matches)
+      setState('done')
+      return
+    }
+    try {
+      const response = await searchAmapLocations(query.trim())
+      setResults(response.locations)
+      setState('done')
+    } catch (reason) {
+      setError(reason.message)
+      setState('error')
+    }
+  }
+  return <div className="overlay" onMouseDown={onClose}><section className="sheet location-sheet" onMouseDown={event => event.stopPropagation()}>
+    <div className="sheet-handle"/><div className="sheet-title"><div><p>选择推荐的中心位置</p><h3>你现在在哪里？</h3></div><button onClick={onClose}><X size={20}/></button></div>
+    <button className="current-location-card" onClick={useCurrentLocation} disabled={state === 'locating'}><span><LocateFixed size={20}/></span><div><strong>{state === 'locating' ? '正在获取定位…' : '使用当前位置'}</strong><small>需要允许浏览器获取定位</small></div><ChevronRight size={18}/></button>
+    <form className="place-search location-search" onSubmit={handleSearch}><Search size={19}/><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索商圈、地标或地址"/><button disabled={!query.trim() || state === 'searching'}>{state === 'searching' ? '搜索中' : '搜索'}</button></form>
+    {error && <div className="search-error">{error}</div>}
+    {!query && <><div className="location-section-title">快速选择</div><div className="quick-locations">{quickLocations.map(item => <button key={item.name} className={current.coordinates === item.coordinates ? 'active' : ''} onClick={() => onChoose(item)}><MapPin size={14}/><span>{item.name}<small>{item.district}</small></span>{current.coordinates === item.coordinates && <Check size={15}/>}</button>)}</div></>}
+    {query && <><div className="location-section-title">{configured ? '高德地图搜索结果' : '示例地点'}</div><div className="location-results">{results.map(item => <button key={item.id || item.coordinates} onClick={() => onChoose(item)}><span><MapPin size={17}/></span><div><strong>{item.name}</strong><small>{item.city}{item.district} · {item.address}</small></div><ChevronRight size={17}/></button>)}</div>{state === 'done' && !results.length && <div className="no-poi">没有找到这个地点，试试输入更完整的名称</div>}</>}
+    <div className="location-current">当前：<strong>{current.city} · {current.name}</strong><small>{current.address}</small></div>
+  </section></div>
+}
+
+function EditRestaurantSheet({ restaurant, onClose, onSave }) {
+  const [form, setForm] = useState(() => ({ ...restaurant }))
+  const update = (key, value) => setForm(current => ({ ...current, [key]: value }))
+  return <div className="overlay" onMouseDown={onClose}><section className="sheet edit-sheet" onMouseDown={event => event.stopPropagation()}>
+    <div className="sheet-handle"/><div className="sheet-title"><div><p>更新餐厅信息</p><h3>编辑餐厅</h3></div><button onClick={onClose}><X size={20}/></button></div>
+    <label className="form-field featured"><span>餐厅名称</span><input value={form.name} onChange={event => update('name', event.target.value)} /></label>
+    <div className="form-row"><label className="form-field"><span>菜系</span><select value={form.category} onChange={event => update('category', event.target.value)}>{categories.slice(1).map(category => <option key={category}>{category}</option>)}</select></label><label className="form-field"><span>代表图标</span><input value={form.emoji} onChange={event => update('emoji', event.target.value)} /></label></div>
+    <div className="form-row three"><label className="form-field"><span>距离 km</span><input type="number" min="0" step="0.1" value={form.distance} onChange={event => update('distance', event.target.value)}/></label><label className="form-field"><span>评分</span><input type="number" min="0" max="5" step="0.1" value={form.rating} onChange={event => update('rating', event.target.value)}/></label><label className="form-field"><span>人均 ¥</span><input type="number" min="0" value={form.price} onChange={event => update('price', event.target.value)}/></label></div>
+    <label className="form-field"><span>地址</span><input value={form.address} onChange={event => update('address', event.target.value)} /></label>
+    <button className={`want-toggle ${form.wishlist ? 'active' : ''}`} onClick={() => update('wishlist', !form.wishlist)}><span><Heart size={20} fill={form.wishlist ? 'currentColor' : 'none'}/></span><div><strong>加入「待前往」</strong><small>开启后，会在下次推荐时优先出现</small></div><i>{form.wishlist && <Check size={14}/>}</i></button>
+    <button className="save-btn" disabled={!String(form.name).trim()} onClick={() => onSave(form)}>保存修改</button>
   </section></div>
 }
 
