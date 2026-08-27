@@ -47,17 +47,25 @@ function App() {
     return wishBoost + r.rating * 9 - r.distance * 3 + newBoost + Math.random() * 35 - recentPenalty
   }
 
-  function generate(list = filtered) {
+  function generate(list = filtered, previousMainId = null) {
     if (!list.length) { setRecommendations([]); return }
-    const picks = [...list].sort((a, b) => scoreRestaurant(b) - scoreRestaurant(a)).slice(0, 3)
-    setRecommendations(picks)
+    const ranked = list
+      .map(restaurant => ({ restaurant, score: scoreRestaurant(restaurant) }))
+      .sort((a, b) => b.score - a.score)
+    if (previousMainId && ranked.length > 1 && ranked[0].restaurant.id === previousMainId) {
+      const nextMainIndex = ranked.findIndex(item => item.restaurant.id !== previousMainId)
+      const [nextMain] = ranked.splice(nextMainIndex, 1)
+      ranked.unshift(nextMain)
+    }
+    setRecommendations(ranked.slice(0, 3).map(item => item.restaurant))
   }
 
   useEffect(() => { generate(filtered) }, [filtered]) // 选择集或筛选变化时立即刷新推荐
 
   function reroll() {
-    generate()
-    setToast('换了一组，看看这次合不合胃口')
+    const previousMainId = recommendations[0]?.id
+    generate(filtered, previousMainId)
+    setToast(filtered.length > 1 ? '已更换首选，看看这次合不合胃口' : '当前条件只有这一家，试试放宽筛选')
   }
 
   function chooseRestaurant(restaurant) {
